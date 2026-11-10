@@ -1,0 +1,395 @@
+<!doctype html>
+<!--
+  Live laser readout from the hub. Open in Chromium/Chrome/Edge (Web Serial):
+    chromium hardware/laser-readout.html
+  CONNECT USB HUB and pick the hub's port (close any `pio device monitor` on it first).
+  Also takes a Wi-Fi hub or the fake hub: ws://selfriser-hub.local:81, ws://localhost:8181.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laser Readout</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #dddbd5;
+    --accent: #c2410c; --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --spark: #c2410c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --panel: #1f1f1d; --ink: #ecebe7; --muted: #9a9892; --line: #34332f;
+      --accent: #fb923c; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --spark: #fb923c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --panel: #1f1f1d; --ink: #ecebe7; --muted: #9a9892; --line: #34332f;
+    --accent: #fb923c; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --spark: #fb923c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  select, input, button {
+    font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 10px; min-height: 36px;
+  }
+  input { min-width: 0; width: 230px; }
+  button { cursor: pointer; font-weight: 600; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .grow { flex: 1; }
+  #conn { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  #conn b { color: var(--ink); font-weight: 600; }
+
+  .readout { text-align: center; padding: 26px 16px 18px; }
+  #what { font-size: 13px; color: var(--muted); }
+  #value {
+    font-variant-numeric: tabular-nums; font-weight: 650; letter-spacing: -.02em;
+    font-size: clamp(48px, 14vw, 104px); line-height: 1.05; margin: 6px 0 4px; overflow-wrap: anywhere;
+  }
+  #value.stale { opacity: .35; }
+  #status { font-size: 14px; font-weight: 600; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  canvas { width: 100%; height: 90px; display: block; margin-top: 14px; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+  .stat { border-top: 1px solid var(--line); padding-top: 8px; }
+  .stat span { display: block; font-size: 12px; color: var(--muted); }
+  .stat b { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  pre { font-size: 12px; max-height: 220px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; word-break: break-all; }
+  @media (max-width: 520px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    input { width: 100%; }
+    .row > * { flex: 1 1 140px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Selfriser · laser readout</h1>
+
+  <section class="panel">
+    <div class="row">
+      <button id="usb" class="primary">Connect USB hub</button>
+      <input id="wsUrl" value="ws://selfriser-hub.local:81" aria-label="Wi-Fi hub address">
+      <button id="ws">Connect Wi-Fi</button>
+      <button id="disc" disabled>Disconnect</button>
+    </div>
+    <div id="conn">Not connected.</div>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <label>Tower <select id="tower"><option value="">waiting…</option></select></label>
+      <label>Show
+        <select id="show">
+          <option value="dist">Laser distance</option>
+          <option value="height">Height above zero</option>
+        </select>
+      </label>
+      <label>Units
+        <select id="unit">
+          <option value="mm">millimetres</option>
+          <option value="cm">centimetres</option>
+          <option value="m">metres</option>
+          <option value="in">inches</option>
+          <option value="ft">feet</option>
+          <option value="ftin">feet + inches</option>
+        </select>
+      </label>
+      <label>Precision <select id="prec"></select></label>
+    </div>
+  </section>
+
+  <section class="panel readout">
+    <div id="what">—</div>
+    <div id="value" class="stale">—</div>
+    <div id="status">Connect the hub to start.</div>
+    <canvas id="spark" aria-label="Last 30 seconds"></canvas>
+    <div class="stats">
+      <div class="stat"><span>Min (5 s)</span><b id="sMin">—</b></div>
+      <div class="stat"><span>Max (5 s)</span><b id="sMax">—</b></div>
+      <div class="stat"><span>Average (5 s)</span><b id="sAvg">—</b></div>
+      <div class="stat"><span>Readings / s</span><b id="sRate">—</b></div>
+    </div>
+    <div class="note">The SEN0366 measures to the nearest 1 mm (about 1/25"). Finer precision only shows rounding.</div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Raw hub lines</summary>
+      <pre id="raw"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const MM_PER = { mm: 1, cm: 10, m: 1000, in: 25.4, ft: 304.8, ftin: 25.4 };
+const SUFFIX = { mm: ' mm', cm: ' cm', m: ' m', in: '"', ft: "'" };
+const DECIMALS = [0, 1, 2, 3, 4];
+const FRACTIONS = [2, 4, 8, 16, 32, 64];
+const DEFAULT_PREC = { mm: 'd0', cm: 'd1', m: 'd3', in: 'f16', ft: 'd2', ftin: 'f16' };
+
+const store = {
+  get(k, d) { try { return localStorage.getItem('laser-readout.' + k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('laser-readout.' + k, v); } catch {} },
+};
+
+// ---- settings ----
+function fillPrecision(keep) {
+  const unit = $('unit').value, sel = $('prec');
+  const opts = DECIMALS.map(d => [`d${d}`, d === 0 ? 'whole' : (0).toFixed(d).replace(/0$/, '1')]);
+  if (unit === 'in' || unit === 'ftin') opts.push(...FRACTIONS.map(f => [`f${f}`, `1/${f}"`]));
+  sel.innerHTML = opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  const want = keep ?? store.get('prec.' + unit, DEFAULT_PREC[unit]);
+  sel.value = opts.some(o => o[0] === want) ? want : DEFAULT_PREC[unit];
+}
+$('unit').value = store.get('unit', 'ftin');
+$('show').value = store.get('show', 'dist');
+fillPrecision();
+$('unit').onchange = () => { store.set('unit', $('unit').value); fillPrecision(); render(); };
+$('prec').onchange = () => { store.set('prec.' + $('unit').value, $('prec').value); render(); };
+$('show').onchange = () => { store.set('show', $('show').value); render(); };
+$('tower').onchange = () => render();
+
+// ---- formatting ----
+function fraction(inches, denom) {
+  const ticks = Math.round(inches * denom);
+  let whole = Math.floor(ticks / denom), num = ticks % denom, d = denom;
+  while (num && num % 2 === 0) { num /= 2; d /= 2; }
+  return { whole, text: num ? `${whole ? whole + ' ' : ''}${num}/${d}` : `${whole}` };
+}
+function format(mm, unit = $('unit').value, prec = $('prec').value) {
+  if (mm == null || !isFinite(mm)) return '—';
+  const sign = mm < 0 ? '−' : '';
+  const v = Math.abs(mm) / MM_PER[unit];
+  const isFrac = prec[0] === 'f', n = Number(prec.slice(1));
+  if (unit === 'ftin') {
+    // Round the total first so 11 31/32" never shows as 12".
+    const step = isFrac ? 1 / n : 10 ** -n;
+    const total = Math.round(v / step) * step;
+    const ft = Math.floor(total / 12 + 1e-9), rest = total - ft * 12;
+    const inch = isFrac ? fraction(rest, n).text : rest.toFixed(n);
+    return `${sign}${ft}' ${inch}"`;
+  }
+  if (isFrac) return `${sign}${fraction(v, n).text}"`;
+  return sign + v.toFixed(n) + SUFFIX[unit];
+}
+
+// ---- data ----
+const towers = new Map();  // n -> { samples: [{t, mm, h, q, s}], last }
+const HISTORY_MS = 30000, STATS_MS = 5000, STALE_MS = 1500;
+let hubInfo = null, lastLineAt = 0;
+
+function onLine(line) {
+  lastLineAt = performance.now();
+  const raw = $('raw');
+  if (raw.parentElement.open) {
+    raw.textContent = (line + '\n' + raw.textContent).slice(0, 6000);
+  }
+  if (line[0] !== '{') return;
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.t === 'hub') { hubInfo = msg; return; }
+  if (msg.t !== 'tel' || !msg.n) return;
+  let tw = towers.get(msg.n);
+  if (!tw) {
+    tw = { samples: [] };
+    towers.set(msg.n, tw);
+    refreshTowerList();
+  }
+  const now = performance.now();
+  tw.last = { t: now, mm: msg.mm, h: msg.h, q: msg.q, s: msg.s, via: msg.via };
+  tw.samples.push(tw.last);
+  while (tw.samples.length && now - tw.samples[0].t > HISTORY_MS) tw.samples.shift();
+}
+
+function refreshTowerList() {
+  const sel = $('tower'), cur = sel.value;
+  const ns = [...towers.keys()].sort((a, b) => a - b);
+  sel.innerHTML = ns.map(n => `<option value="${n}">Tower ${n}</option>`).join('');
+  sel.value = ns.includes(Number(cur)) ? cur : String(ns[0]);
+}
+
+const good = s => s.q === 0 && s.s !== 'nosensor';
+const shownMm = s => $('show').value === 'height' ? s.h * 25.4 : s.mm;
+
+// ---- render ----
+function render() {
+  const now = performance.now();
+  const tw = towers.get(Number($('tower').value));
+  const showName = $('show').value === 'height' ? 'Height above zero' : 'Laser distance';
+  $('what').textContent = tw ? `Tower ${$('tower').value} · ${showName}` : showName;
+  updateConn(now);
+  if (!tw || !tw.last) {
+    $('value').textContent = '—'; $('value').className = 'stale';
+    setStatus(link ? 'Connected. Waiting for a tower to report…' : 'Connect the hub to start.', '');
+    drawSpark([]); setStats([]); return;
+  }
+  const last = tw.last, age = now - last.t, stale = age > STALE_MS;
+  const valid = good(last);
+  $('value').textContent = valid ? format(shownMm(last)) : '—';
+  $('value').className = stale || !valid ? 'stale' : '';
+
+  if (stale) setStatus(`No report from this tower for ${(age / 1000).toFixed(0)} s`, 'bad');
+  else if (last.s === 'nosensor' || last.q === 255) setStatus('Laser not reading: check the wiring (swap yellow and white)', 'bad');
+  else if (last.q !== 0) setStatus('No return: out of range, dark or shiny target, or sunlight', 'warn');
+  else setStatus(`Reading${last.via ? ` · relayed by tower ${last.via}` : ''}`, 'ok');
+
+  const recent = tw.samples.filter(s => now - s.t <= STATS_MS);
+  setStats(recent.filter(good).map(shownMm), recent.length / (STATS_MS / 1000));
+  drawSpark(tw.samples, now);
+}
+function setStatus(text, cls) { $('status').textContent = text; $('status').className = cls; }
+function setStats(vals, rate) {
+  if (!vals.length) { ['sMin', 'sMax', 'sAvg'].forEach(id => $(id).textContent = '—'); }
+  else {
+    $('sMin').textContent = format(Math.min(...vals));
+    $('sMax').textContent = format(Math.max(...vals));
+    $('sAvg').textContent = format(vals.reduce((a, b) => a + b, 0) / vals.length);
+  }
+  $('sRate').textContent = rate == null ? '—' : rate.toFixed(1);
+}
+
+function drawSpark(samples, now) {
+  const c = $('spark'), dpr = devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue('--line'); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, h - .5); g.lineTo(w, h - .5); g.stroke();
+  const pts = samples.filter(good);
+  if (pts.length < 2) return;
+  const vals = pts.map(shownMm);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = Math.max((hi - lo) * 0.15, 2);  // at least ±2 mm so 1 mm jitter doesn't fill the box
+  lo -= pad; hi += pad;
+  const x = t => w - ((now - t) / HISTORY_MS) * w;
+  const y = v => h - 4 - ((v - lo) / (hi - lo)) * (h - 8);
+  g.strokeStyle = css.getPropertyValue('--spark'); g.lineWidth = 2; g.lineJoin = 'round';
+  g.beginPath();
+  let prevT = null;
+  pts.forEach((p, i) => {
+    // break the line across gaps (dropped reports, no-return readings)
+    if (prevT == null || p.t - prevT > 1000) g.moveTo(x(p.t), y(vals[i])); else g.lineTo(x(p.t), y(vals[i]));
+    prevT = p.t;
+  });
+  g.stroke();
+  g.fillStyle = css.getPropertyValue('--muted'); g.font = '11px system-ui';
+  g.fillText('last 30 s', 4, 12);
+}
+
+// ---- connections ----
+let link = null;  // { kind, close() }
+let connNote = '';  // why the last attempt failed; render() would overwrite a status line
+
+function failed(text) { connNote = text; updateConn(performance.now()); }
+
+function updateConn(now) {
+  const el = $('conn');
+  if (!link) {
+    el.innerHTML = connNote ? '<span class="bad"></span>' : 'Not connected.';
+    if (connNote) el.firstChild.textContent = connNote;
+    return;
+  }
+  const quiet = now - lastLineAt > 2500;
+  const seen = hubInfo?.towers?.length ? `hears tower${hubInfo.towers.length > 1 ? 's' : ''} ${hubInfo.towers.join(', ')}` : 'hears no towers yet';
+  el.innerHTML = quiet
+    ? `<b>${link.kind}</b> · <span class="warn">no data from the hub</span>`
+    : `<b>${link.kind}</b> · hub ${hubInfo ? `fw ${hubInfo.fw}, channel ${hubInfo.ch}, ${seen}` : 'talking'}`;
+}
+function setConnected(l) {
+  link = l;
+  if (l) connNote = '';
+  $('usb').disabled = $('ws').disabled = !!l;
+  $('disc').disabled = !l;
+  if (!l) { towers.clear(); hubInfo = null; $('tower').innerHTML = '<option value="">waiting…</option>'; }
+}
+
+function splitter(onText) {
+  let buf = '';
+  return chunk => {
+    buf += chunk;
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) onText(line);
+    }
+    if (buf.length > 10000) buf = '';
+  };
+}
+
+$('usb').onclick = async () => {
+  if (!('serial' in navigator)) {
+    failed('This browser has no Web Serial. Open the page in Chromium, Chrome or Edge.');
+    return;
+  }
+  let port;
+  try { port = await navigator.serial.requestPort(); }
+  catch (e) {
+    failed(e.name === 'NotFoundError'
+      ? 'No port picked. If the list was empty, unplug the hub and plug it back in.'
+      : `Couldn't ask for a port: ${e.message}`);
+    return;
+  }
+  try { await port.open({ baudRate: 115200 }); }
+  catch (e) { failed(`Couldn't open the port: ${e.message}. Is a pio device monitor still open on it? Close it with Ctrl+C.`); return; }
+  let reader, closing = false;
+  setConnected({ kind: 'USB hub', async close() {
+    closing = true;
+    try { await reader?.cancel(); } catch {}
+    try { await port.close(); } catch {}
+  } });
+  const feed = splitter(onLine);
+  const decoder = new TextDecoder();
+  try {
+    reader = port.readable.getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      feed(decoder.decode(value, { stream: true }));
+    }
+  } catch (e) {
+    if (!closing) connNote = `USB link lost: ${e.message}`;
+  } finally {
+    try { reader?.releaseLock(); } catch {}
+    if (!closing) { try { await port.close(); } catch {} }
+    setConnected(null);
+  }
+};
+
+$('ws').onclick = () => {
+  const url = $('wsUrl').value.trim();
+  store.set('ws', url);
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { failed(e.message); return; }
+  const feed = splitter(onLine);
+  let opened = false;
+  setConnected({ kind: 'Wi-Fi hub', close() { ws.close(); } });
+  ws.onopen = () => { opened = true; };
+  ws.onmessage = e => feed(String(e.data) + '\n');
+  ws.onclose = () => {
+    if (!opened) connNote = `Couldn't reach ${url}`;
+    setConnected(null);
+  };
+};
+$('wsUrl').value = store.get('ws', $('wsUrl').value);
+$('disc').onclick = () => link?.close();
+
+setInterval(render, 100);
+render();
+</script>
+</body>
+</html>

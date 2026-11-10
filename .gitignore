@@ -1,0 +1,11 @@
+node_modules
+dist
+dev-dist
+*.local
+
+# Vendor drawings are proprietary (see title block) - keep them out of the remote
+*.pdf
+.wrangler
+
+# Real stage designs measured off proprietary drawings (see src/model/examples/index.ts)
+src/model/examples/private/

@@ -1,0 +1,12 @@
+# Static-assets Worker in front of pickplayground.com/selfriser. It is independent of the
+# marketing site's Pages project, so uploading the site never removes this app.
+#   npm run deploy
+name = "selfriser"
+compatibility_date = "2026-09-01"
+workers_dev = false
+routes = [{ pattern = "pickplayground.com/selfriser*", zone_name = "pickplayground.com" }]
+
+[assets]
+directory = "./dist"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
